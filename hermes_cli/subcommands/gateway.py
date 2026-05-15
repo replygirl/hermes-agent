@@ -194,6 +194,15 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    gateway_install.add_argument(
+        "--macos-app-wrapper",
+        dest="macos_app_wrapper",
+        action="store_true",
+        help=(
+            "macOS only: run launchd through a Hermes Agent.app wrapper so "
+            "privacy prompts show Hermes instead of python"
+        ),
+    )
 
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser(
