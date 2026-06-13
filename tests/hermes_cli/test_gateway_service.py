@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -799,6 +800,11 @@ class TestLaunchdServiceRecovery:
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
+        marker = gateway_cli._planned_restart_notification_path()
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["via_service"] is True
+        assert payload["detached"] is False
+        assert payload["source"] == "cli"
 
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []

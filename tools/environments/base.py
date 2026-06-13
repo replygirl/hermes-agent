@@ -299,6 +299,11 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Shell syntax used for snapshot capture/refresh.  Existing non-local
+    # backends execute bash, so bash remains the default; LocalEnvironment can
+    # set this to "zsh" before init_session() runs.
+    _shell_flavor: str = "bash"
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
@@ -348,6 +353,36 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _snapshot_dump_commands(self, quoted_snap: str) -> str:
+        """Return shell code that writes env/functions/aliases to snapshot.
+
+        The snapshot is sourced before every command.  Refreshing the whole
+        snapshot after each command preserves functions and aliases from the
+        selected login shell instead of overwriting them with env vars only.
+        """
+        if getattr(self, "_shell_flavor", "bash") == "zsh":
+            return "\n".join(
+                [
+                    f"typeset -px > {quoted_snap}",
+                    f"functions >> {quoted_snap} 2>/dev/null || true",
+                    f"alias -L >> {quoted_snap} 2>/dev/null || true",
+                    f"echo 'setopt aliases 2>/dev/null || true' >> {quoted_snap}",
+                    f"echo 'set +e' >> {quoted_snap}",
+                    f"echo 'set +u' >> {quoted_snap}",
+                ]
+            )
+
+        return "\n".join(
+            [
+                f"export -p > {quoted_snap}",
+                f"declare -f | grep -vE '^_[^_]' >> {quoted_snap}",
+                f"alias -p >> {quoted_snap}",
+                f"echo 'shopt -s expand_aliases' >> {quoted_snap}",
+                f"echo 'set +e' >> {quoted_snap}",
+                f"echo 'set +u' >> {quoted_snap}",
+            ]
+        )
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -370,12 +405,7 @@ class BaseEnvironment(ABC):
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
+            f"{self._snapshot_dump_commands(_quoted_snap)}\n"
             f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
@@ -449,9 +479,9 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars/functions/aliases to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(f"{self._snapshot_dump_commands(_quoted_snap)} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
