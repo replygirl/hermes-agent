@@ -8,6 +8,7 @@ import type {
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
+  SlashExecResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
@@ -341,6 +342,32 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'pick / adopt an animated pet',
+    name: 'pet',
+    usage: '/pet [list | <slug> | off]',
+    run: (arg, ctx, cmd) => {
+      const sub = arg.trim().toLowerCase()
+
+      // No slug (or an explicit "list") → the interactive picker; the TUI can
+      // do this even though the text `/pet` path only prints. status/off/<slug>
+      // keep their text behaviour via the slash worker.
+      if (!sub || sub === 'list') {
+        return patchOverlayState({ petPicker: true })
+      }
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(
+          ctx.guarded<SlashExecResponse>(r => {
+            const body = r.output || '/pet: no output'
+            ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'switch theme skin (fires skin.changed)',
     name: 'skin',
     run: (arg, ctx) => {
@@ -553,6 +580,7 @@ export const sessionCommands: SlashCommand[] = [
         // even with zero API calls or on a resumed session. Render it whenever
         // present, before the token panel.
         const creditsLines = r?.credits_lines ?? []
+
         if (creditsLines.length) {
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }
@@ -561,6 +589,7 @@ export const sessionCommands: SlashCommand[] = [
           if (!creditsLines.length) {
             ctx.transcript.sys('no API calls yet')
           }
+
           return
         }
 
