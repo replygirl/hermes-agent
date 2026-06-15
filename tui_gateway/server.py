@@ -176,6 +176,12 @@ _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
+        # Pet RPCs hit the network (manifest fetch / spritesheet download): inline
+        # they serialize on the reader thread, so picker previews trickle in one at
+        # a time. On the pool they fetch concurrently and stop blocking other RPCs.
+        "pet.gallery",
+        "pet.select",
+        "pet.thumb",
         "plugins.manage",
         "session.branch",
         "session.compress",
@@ -4802,6 +4808,296 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("pet.info")
+def _(rid, params: dict) -> dict:
+    """Return the active petdex pet for surfaces that render sprites.
+
+    Shared by the desktop (canvas) and the TUI (half-block). Carries the
+    spritesheet bytes (base64) plus the engine's frame geometry + state-row
+    taxonomy so the renderer is a thin, framework-native consumer. The
+    activity→state decision is mirrored from ``agent.pet.state`` client-side.
+
+    Agent-independent (reads config + disk), so it works on any session and
+    before the agent finishes building. Fail-open: returns ``enabled=False``
+    on any error rather than erroring the surface.
+    """
+    import base64
+
+    try:
+        from agent.pet import constants, store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        enabled = bool(pet_cfg.get("enabled"))
+        configured_slug = str(pet_cfg.get("slug", "") or "")
+        pet = store.resolve_active_pet(configured_slug) if enabled else None
+
+        if not enabled or pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        raw = pet.spritesheet.read_bytes()
+        suffix = pet.spritesheet.suffix.lower()
+        mime = "image/png" if suffix == ".png" else "image/webp"
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "mime": mime,
+                "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
+                "frameW": constants.FRAME_W,
+                "frameH": constants.FRAME_H,
+                "framesPerState": constants.FRAMES_PER_STATE,
+                "loopMs": constants.LOOP_MS,
+                "scale": float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE),
+                "stateRows": list(constants.STATE_ROWS),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("pet.info failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.cells")
+def _(rid, params: dict) -> dict:
+    """Return half-block cell frames for one pet state (TUI renderer).
+
+    The TUI can't draw a canvas, so the engine downsamples the spritesheet to
+    a grid of half-block cells and the Ink side paints them with native color
+    props. Each cell is ``[tr,tg,tb,ta, br,bg,bb,ba]`` (top + bottom pixel).
+
+    Params: ``state`` (idle/run/review/failed/wave/jump), ``cols`` (width).
+    Fail-open: ``enabled=False`` on any problem.
+    """
+    try:
+        from agent.pet import constants, store
+        from agent.pet.render import PetRenderer
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        if not bool(pet_cfg.get("enabled")):
+            return _ok(rid, {"enabled": False})
+
+        pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
+        if pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        state = str(params.get("state") or constants.PetState.IDLE.value)
+        cols = int(params.get("cols") or pet_cfg.get("unicode_cols", 18) or 18)
+
+        renderer = PetRenderer(
+            str(pet.spritesheet),
+            mode="unicode",
+            scale=float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE),
+            unicode_cols=cols,
+        )
+        count = renderer.frame_count(state) or 1
+        frames = []
+        for i in range(count):
+            grid = renderer.cells(state, i, cols=cols)
+            frames.append(
+                [[[*top, *bottom] for (top, bottom) in row] for row in grid]
+            )
+
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "state": state,
+                "cols": cols,
+                "frameMs": constants.LOOP_MS / max(1, count),
+                "frames": frames,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.cells failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.gallery")
+def _(rid, params: dict) -> dict:
+    """List adoptable pets for the desktop appearance picker.
+
+    Returns the petdex gallery merged with local install state plus the
+    current config (active slug + enabled). Agent-independent. Fail-open:
+    returns whatever is installed locally if the gallery can't be reached, so
+    the picker still works offline.
+    """
+    try:
+        from agent.pet import store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        installed = {p.slug: p for p in store.installed_pets()}
+
+        gallery: list[dict] = []
+        seen: set[str] = set()
+        try:
+            from agent.pet.manifest import fetch_manifest
+
+            for entry in fetch_manifest():
+                seen.add(entry.slug)
+                gallery.append(
+                    {
+                        "slug": entry.slug,
+                        "displayName": entry.display_name,
+                        "installed": entry.slug in installed,
+                        "spritesheetUrl": entry.spritesheet_url,
+                        # petdex exposes no popularity metric; "curated" (its
+                        # hand-picked/official set, identified by the asset path)
+                        # is the closest signal, so the picker can surface it first.
+                        "curated": "/curated/" in entry.spritesheet_url,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
+            logger.debug("pet.gallery manifest fetch failed: %s", exc)
+
+        # Always include locally-installed pets even if the gallery is unreachable.
+        for slug, pet in installed.items():
+            if slug not in seen:
+                gallery.append(
+                    {"slug": slug, "displayName": pet.display_name, "installed": True, "spritesheetUrl": ""}
+                )
+
+        return _ok(
+            rid,
+            {
+                "enabled": bool(pet_cfg.get("enabled")),
+                "active": str(pet_cfg.get("slug", "") or ""),
+                "pets": gallery,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.gallery failed: %s", exc)
+        return _ok(rid, {"enabled": False, "active": "", "pets": []})
+
+
+@method("pet.select")
+def _(rid, params: dict) -> dict:
+    """Adopt a pet from the desktop picker: install (if needed) + activate.
+
+    Params: ``slug`` (required). Writes ``display.pet.*`` to config and returns
+    ``{ok, slug, displayName}``. The surface re-pulls ``pet.info`` to render it.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _set_active
+
+        try:
+            pet = store.install_pet(slug)
+        except (store.PetStoreError, ManifestError) as exc:
+            return _err(rid, 5031, f"could not adopt '{slug}': {exc}")
+        _set_active(slug)
+        return _ok(rid, {"ok": True, "slug": slug, "displayName": pet.display_name})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.select failed: %s", exc)
+        return _err(rid, 5031, f"pet.select failed: {exc}")
+
+
+@method("pet.remove")
+def _(rid, params: dict) -> dict:
+    """Uninstall a pet from the desktop picker (delete its on-disk directory).
+
+    Params: ``slug`` (required). If the removed pet was the active one, the
+    display is turned off so nothing tries to render a now-missing sprite.
+    Returns ``{ok, slug}`` where ``ok`` reflects whether a directory was deleted.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from hermes_cli.pets import _clear_active_if
+
+        removed = store.remove_pet(slug)
+
+        # If that was the active pet, stop surfaces pointing at a deleted sprite.
+        try:
+            _clear_active_if(slug)
+        except Exception as exc:  # noqa: BLE001 - removal already succeeded
+            logger.debug("pet.remove config update failed: %s", exc)
+
+        return _ok(rid, {"ok": removed, "slug": slug})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.remove failed: %s", exc)
+        return _err(rid, 5031, f"pet.remove failed: {exc}")
+
+
+@method("pet.thumb")
+def _(rid, params: dict) -> dict:
+    """Return a small idle-frame PNG (data URI) for one pet — the picker preview.
+
+    Cropped + cached server-side so the renderer gets a same-origin data URL
+    instead of a CDN ``<img>`` (which the desktop CSP / R2 hotlink rules break).
+    Params: ``slug`` (required), ``url`` (optional petdex spritesheet URL used
+    only for not-yet-installed pets). Fail-open: ``{ok: false}`` with no error.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        import base64
+
+        from agent.pet import store
+
+        data = store.thumbnail_png(slug, source_url=str(params.get("url") or ""))
+        if not data:
+            return _ok(rid, {"ok": False, "slug": slug})
+
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "slug": slug,
+                "dataUri": "data:image/png;base64," + base64.standard_b64encode(data).decode("ascii"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.thumb failed: %s", exc)
+        return _ok(rid, {"ok": False, "slug": slug})
+
+
+@method("pet.disable")
+def _(rid, params: dict) -> dict:
+    """Turn the pet off from the desktop picker (``display.pet.enabled=false``)."""
+    try:
+        from hermes_cli.pets import _set_enabled
+
+        _set_enabled(False)
+        return _ok(rid, {"ok": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.disable failed: %s", exc)
+        return _err(rid, 5031, f"pet.disable failed: {exc}")
 
 
 @method("credits.view")

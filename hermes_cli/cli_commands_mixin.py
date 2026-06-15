@@ -1009,6 +1009,65 @@ class CLICommandsMixin:
             print("  Usage: /personality <name>")
             print()
 
+    def _handle_pet_command(self, cmd: str):
+        """Install / select / disable an animated petdex mascot.
+
+        ``/pet`` or ``/pet status``  → show current pet + installed list
+        ``/pet <slug>``              → install (if needed) + make active
+        ``/pet off``                 → disable the pet display
+        ``/pet list``                → browse the petdex gallery (first 20)
+
+        Writes ``display.pet.*`` to config; the CLI/TUI/desktop pet surfaces
+        pick the change up on their next poll, so the pet appears shortly.
+        """
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _pet_config, _set_active, _set_enabled
+
+        parts = cmd.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        low = arg.lower()
+
+        if not arg or low == "status":
+            cfg = _pet_config()
+            installed = [p.slug for p in store.installed_pets()]
+            active = store.resolve_active_pet(str(cfg.get("slug", "") or ""))
+            state = "on" if cfg.get("enabled") else "off"
+            print(f"(^_^) Pet: {state}  ·  active: {active.slug if active else 'none'}")
+            print(f"  installed: {', '.join(installed) or 'none (try /pet boba)'}")
+            print("  Usage: /pet <slug> · /pet off · /pet list")
+            return
+
+        if low == "off":
+            _set_enabled(False)
+            print("(-_-)zzZ Pet disabled.")
+            return
+
+        if low == "list":
+            from agent.pet.manifest import fetch_manifest
+            try:
+                entries = fetch_manifest()
+            except ManifestError as exc:
+                print(f"(._.) Couldn't reach the petdex gallery: {exc}")
+                return
+            installed = {p.slug for p in store.installed_pets()}
+            print(f"(^o^)/ petdex gallery — first 20 of {len(entries)}:")
+            for entry in entries[:20]:
+                mark = "✓" if entry.slug in installed else " "
+                print(f"  {mark} {entry.slug:<24} {entry.display_name}")
+            print("  Adopt one with: /pet <slug>")
+            return
+
+        # Treat the argument as a slug: install (if needed) + activate.
+        print(f"(o_o) Fetching '{arg}' from petdex…")
+        try:
+            pet = store.install_pet(arg)
+        except (store.PetStoreError, ManifestError) as exc:
+            print(f"(x_x) Couldn't adopt '{arg}': {exc}")
+            return
+        _set_active(arg)
+        print(f"(^_^)b {pet.display_name} adopted and set as your active pet — it'll pop in shortly.")
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         from cli import get_job

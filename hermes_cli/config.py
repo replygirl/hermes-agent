@@ -1517,6 +1517,25 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Petdex animated mascot (https://github.com/crafter-station/petdex).
+        # A purely cosmetic sprite that reacts to agent activity across the
+        # CLI, TUI, and desktop app. Manage with `hermes pets`. Disabled until
+        # a pet is installed + selected (no effect on prompt caching — this is
+        # a display concern only).
+        "pet": {
+            "enabled": False,
+            # Active pet slug; resolved against installed pets in
+            # get_hermes_home()/pets/. Empty → first installed pet.
+            "slug": "",
+            # Terminal render protocol for CLI/TUI:
+            #   auto  — detect kitty/iTerm2/sixel, else unicode half-blocks
+            #   kitty | iterm | sixel | unicode | off
+            "render_mode": "auto",
+            # On-screen scale relative to native 192×208 frames (petdex uses 0.7).
+            "scale": 0.7,
+            # Width in terminal columns for the unicode half-block fallback.
+            "unicode_cols": 18,
+        },
     },
 
     # Web dashboard settings

@@ -121,6 +121,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
+  { name: '/pet', description: 'Adopt an animated petdex mascot (/pet boba, /pet off)', surface: exec(), args: true },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
