@@ -1120,6 +1120,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, profile: profile || undefined }),
     }),
+  learnSkill: (
+    req: {
+      paths: string[];
+      hint?: string;
+      category?: string;
+      run?: boolean;
+      min_tier?: "executed" | "checked" | "unverified";
+    },
+    profile?: string,
+  ) =>
+    fetchJSON<LearnSkillResult>("/api/skills/learn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...req, profile: profile || undefined }),
+    }),
   updateSkillsFromHub: (profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/update", {
       method: "POST",
@@ -1168,6 +1183,25 @@ export interface ActionResponse {
   error?: string;
   message?: string;
   update_command?: string;
+}
+
+export interface LearnSkillResult {
+  success: boolean;
+  skill_name: string | null;
+  skill_path: string | null;
+  category: string | null;
+  draft_only: boolean;
+  sources_ingested: number;
+  source_breakdown: Record<string, number>;
+  verification: {
+    tier: "executed" | "checked" | "unverified" | "failed";
+    passed: boolean;
+    checks: string[];
+    warnings: string[];
+    errors: string[];
+  } | null;
+  error: string | null;
+  elapsed_seconds: number;
 }
 
 export interface DebugShareResponse {

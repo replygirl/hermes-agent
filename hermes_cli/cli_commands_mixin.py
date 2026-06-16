@@ -1400,6 +1400,66 @@ class CLICommandsMixin:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn slash command — distill a skill from source dirs.
+
+        Usage: /learn <dirpath> [dirpath ...] [--hint text] [--run]
+                       [--min-tier executed|checked|unverified] [--category name]
+        """
+        from agent.skill_distill import distill_skill_from_dirs, render_distill_result
+
+        # Lightweight arg parse (shlex) — the slash surface doesn't use argparse.
+        import shlex
+        try:
+            tokens = shlex.split(cmd.strip())[1:]  # drop "/learn"
+        except ValueError as e:
+            print(f"  /learn: could not parse arguments ({e}).")
+            return
+
+        paths: list[str] = []
+        hint = ""
+        category = None
+        run_commands = False
+        min_tier = "checked"
+        i = 0
+        while i < len(tokens):
+            t = tokens[i]
+            if t == "--hint" and i + 1 < len(tokens):
+                hint = tokens[i + 1]; i += 2; continue
+            if t == "--category" and i + 1 < len(tokens):
+                category = tokens[i + 1]; i += 2; continue
+            if t == "--min-tier" and i + 1 < len(tokens):
+                min_tier = tokens[i + 1]; i += 2; continue
+            if t == "--run":
+                run_commands = True; i += 1; continue
+            paths.append(t); i += 1
+
+        if not paths:
+            print("  /learn <dirpath> [dirpath ...] [--hint text] [--run] "
+                  "[--min-tier executed|checked|unverified]")
+            return
+
+        main_runtime = None
+        if getattr(self, "agent", None):
+            main_runtime = {
+                "model": getattr(self, "model", None),
+                "provider": getattr(self, "provider", None),
+                "base_url": getattr(self, "base_url", None),
+                "api_key": getattr(self, "api_key", None),
+                "api_mode": getattr(self, "api_mode", None),
+            }
+
+        res = distill_skill_from_dirs(
+            paths,
+            hint=hint,
+            category=category,
+            run_commands=run_commands,
+            min_tier=min_tier,
+            main_runtime=main_runtime,
+            progress=lambda m: print(f"  · {m}", flush=True),
+        )
+        print(render_distill_result(res, markdown=False))
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand

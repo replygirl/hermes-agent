@@ -653,6 +653,35 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    help: 'distill a reusable skill from dirs of source material (code, docs, PDFs) — /learn <dir> [dir ...] [--hint text] [--run]',
+    name: 'learn',
+    run: (arg, ctx, cmd) => {
+      if (!arg.trim()) {
+        return ctx.transcript.sys(
+          'usage: /learn <dirpath> [dirpath ...] [--hint text] [--run] [--min-tier executed|checked|unverified]'
+        )
+      }
+
+      ctx.transcript.sys('distilling skill from sources (synthesize + verify)…')
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
+
+          const body = r?.output || '/learn: no output'
+          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? ctx.transcript.page(text, 'Learn') : ctx.transcript.sys(text)
+        })
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',
     run: (arg, ctx, cmd) => {

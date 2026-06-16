@@ -2260,6 +2260,89 @@ class GatewaySlashCommandsMixin:
                      f"on the CLI, or ~/.hermes/pending/skills/{pending_id}.json)")
         return out
 
+    async def _handle_learn_command(self, event: MessageEvent) -> str:
+        """Handle /learn on the gateway — distill a skill from source dirs.
+
+        Usage: /learn <dirpath> [dirpath ...] [--hint text]
+                       [--min-tier executed|checked|unverified] [--category name]
+
+        The directories must be readable by the gateway process (paths are
+        resolved on the host the gateway runs on, not the sender's machine).
+        ``--run`` (live sandbox execution of distilled snippets) is restricted
+        to admin users, since it executes shell commands.
+        """
+        import asyncio
+        import shlex
+
+        from agent.skill_distill import distill_skill_from_dirs, render_distill_result
+
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return ("Usage: /learn <dirpath> [dirpath ...] [--hint text] "
+                    "[--min-tier executed|checked|unverified]\n"
+                    "Distills a reusable skill from directories of source "
+                    "material (code, docs, PDFs) readable by the gateway host.")
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as e:
+            return f"/learn: could not parse arguments ({e})."
+
+        paths: list[str] = []
+        hint = ""
+        category = None
+        run_commands = False
+        min_tier = "checked"
+        i = 0
+        while i < len(tokens):
+            tk = tokens[i]
+            if tk == "--hint" and i + 1 < len(tokens):
+                hint = tokens[i + 1]; i += 2; continue
+            if tk == "--category" and i + 1 < len(tokens):
+                category = tokens[i + 1]; i += 2; continue
+            if tk == "--min-tier" and i + 1 < len(tokens):
+                min_tier = tokens[i + 1]; i += 2; continue
+            if tk == "--run":
+                run_commands = True; i += 1; continue
+            paths.append(tk); i += 1
+
+        if not paths:
+            return "/learn needs at least one directory path."
+
+        # --run executes shell snippets in a sandbox — admin only over the gateway.
+        if run_commands:
+            is_admin = False
+            try:
+                from gateway.slash_access import policy_for_source as _policy_for_source
+
+                source = event.source
+                user_id = (source.user_id if source else None)
+                policy = _policy_for_source(self.config, source)
+                # When no admin list is configured (policy.enabled is False),
+                # the scope is unrestricted, so allow --run.
+                if not getattr(policy, "enabled", False):
+                    is_admin = True
+                elif user_id is not None and policy.is_admin(user_id):
+                    is_admin = True
+            except Exception:
+                is_admin = False
+            if not is_admin:
+                run_commands = False  # silently downgrade — verification stays at 'checked'
+
+        loop = asyncio.get_running_loop()
+
+        def _run_distill():
+            return distill_skill_from_dirs(
+                paths,
+                hint=hint,
+                category=category,
+                run_commands=run_commands,
+                min_tier=min_tier,
+                main_runtime=None,  # main-model-first resolution from config
+            )
+
+        res = await loop.run_in_executor(None, _run_distill)
+        return render_distill_result(res, markdown=True)
+
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         from gateway.run import _hermes_home, _load_gateway_config, _resolve_gateway_model

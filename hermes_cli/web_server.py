@@ -8340,6 +8340,79 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
     return {"ok": True, "pid": proc.pid, "name": "skills-install"}
 
 
+class SkillLearnRequest(BaseModel):
+    paths: List[str]
+    hint: Optional[str] = ""
+    category: Optional[str] = None
+    run: bool = False
+    min_tier: str = "checked"
+    profile: Optional[str] = None
+
+
+@app.post("/api/skills/learn")
+async def learn_skill(body: SkillLearnRequest, profile: Optional[str] = None):
+    """Distill a reusable skill from directories of source material.
+
+    Runs ``hermes learn <paths> --json`` synchronously (in a worker thread so
+    the event loop is not blocked) and returns the structured DistillResult.
+    The directories are resolved on the host the web server runs on.
+    """
+    paths = [p for p in (body.paths or []) if (p or "").strip()]
+    if not paths:
+        raise HTTPException(status_code=400, detail="at least one path is required")
+    if body.min_tier not in ("executed", "checked", "unverified"):
+        raise HTTPException(status_code=400, detail="min_tier must be executed|checked|unverified")
+
+    args = _profile_cli_args(body.profile or profile) + ["learn", *paths,
+                                                          "--min-tier", body.min_tier,
+                                                          "--json"]
+    if body.hint:
+        args += ["--hint", body.hint]
+    if body.category:
+        args += ["--category", body.category]
+    if body.run:
+        args += ["--run"]
+
+    cmd = [sys.executable, "-m", "hermes_cli.main", *args]
+
+    def _run() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env={**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        )
+
+    try:
+        proc = await asyncio.to_thread(_run)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="learn timed out (600s)")
+    except Exception as exc:
+        _log.exception("Failed to run skills learn")
+        raise HTTPException(status_code=500, detail=f"Failed to run learn: {exc}")
+
+    # The CLI prints the JSON payload as the last JSON object on stdout.
+    out = (proc.stdout or "").strip()
+    payload = None
+    if out:
+        # Find the JSON object (skip any leading banner / Bitwarden lines).
+        brace = out.find("{")
+        if brace != -1:
+            try:
+                payload = json.loads(out[brace:])
+            except Exception:
+                payload = None
+    if payload is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"learn produced no parseable result (rc={proc.returncode}). "
+                   f"stderr: {(proc.stderr or '')[:300]}",
+        )
+    return payload
+
+
 class SkillUninstallRequest(BaseModel):
     name: str
     profile: Optional[str] = None

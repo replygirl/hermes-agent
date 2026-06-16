@@ -71,6 +71,69 @@ hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
 
+## Learning skills from sources (`/learn`)
+
+Instead of writing a skill by hand, you can point Hermes at directories of
+source material — source code, API docs, instruction manuals, PDFs, config
+samples — and have it **distill a reusable skill for you**. Hermes ingests the
+material, synthesizes a draft `SKILL.md`, **verifies it in a throwaway
+sandbox**, and only commits the skill when verification passes.
+
+```bash
+# CLI subcommand:
+hermes learn ~/projects/widget-api ~/docs/widget-openapi --hint "focus on the auth flow"
+
+# In-session slash command (CLI, TUI, and every messaging platform):
+/learn ~/projects/widget-api --hint "the fetch + create flow"
+```
+
+It also lives in the dashboard: open the **Skills** tab and click
+**Learn from sources**.
+
+### Verification tiers
+
+`/learn` never claims a skill was "tested" when it was only parsed. Each
+distilled skill is stamped with the verification **tier** it actually reached:
+
+| Tier | Meaning |
+|------|---------|
+| `executed` | Shell snippets from the draft actually ran (rc 0) in a sandbox |
+| `checked` | Frontmatter valid, snippets parse, referenced commands resolve on PATH |
+| `unverified` | A valid skill, but nothing runnable to test |
+| `failed` | The draft did not pass basic validation (not committed) |
+
+By default the commit floor is `checked` — drafts below it are shown but not
+saved. Lower it with `--min-tier unverified` to commit any valid draft, or
+raise expectations with `--min-tier executed`.
+
+### Running snippets in the sandbox
+
+Pass `--run` (CLI/TUI) or toggle **Run snippets in sandbox** (dashboard) to let
+Hermes execute the draft's read-only inspection snippets (`--version`,
+`--help`, `ls`, etc.) in an isolated temp directory, so it can reach the
+`executed` tier. Destructive or network-mutating commands are never auto-run.
+Over a messaging gateway, `--run` is restricted to admin users since it
+executes shell commands on the gateway host.
+
+### Configuration
+
+`/learn` resolves its synthesis model the same way every auxiliary task does
+(main-model-first). Tune limits under `skills.distill` in `config.yaml`:
+
+```yaml
+skills:
+  distill:
+    max_files: 400          # cap on files walked per run
+    max_file_bytes: 64000   # per-file read cap
+    corpus_budget: 180000   # total chars handed to the synthesis model
+    snippet_timeout: 15     # sandbox shell-snippet timeout (seconds)
+    temperature: 0.2
+    max_tokens: 4000
+```
+
+To route distillation through a specific model regardless of your main model,
+set `auxiliary.skill_distill.provider` / `auxiliary.skill_distill.model`.
+
 ## Progressive Disclosure
 
 Skills use a token-efficient loading pattern:

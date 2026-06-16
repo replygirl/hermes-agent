@@ -37,6 +37,7 @@ import type {
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubScan,
+  LearnSkillResult,
 } from "@/lib/api";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
@@ -136,6 +137,14 @@ export default function SkillsPage() {
   // Skill editor dialog: open + which skill is being edited (null = create).
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorSkill, setEditorSkill] = useState<string | null>(null);
+  // "Learn from sources" dialog state.
+  const [learnOpen, setLearnOpen] = useState(false);
+  const [learnPaths, setLearnPaths] = useState("");
+  const [learnHint, setLearnHint] = useState("");
+  const [learnMinTier, setLearnMinTier] = useState<"executed" | "checked" | "unverified">("checked");
+  const [learnRun, setLearnRun] = useState(false);
+  const [learnBusy, setLearnBusy] = useState(false);
+  const [learnResult, setLearnResult] = useState<LearnSkillResult | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -228,6 +237,45 @@ export default function SkillsPage() {
     },
     [selectedProfile, showToast],
   );
+
+  /* ---- Learn from sources (distill a skill from directories) ---- */
+  const handleLearn = useCallback(async () => {
+    const paths = learnPaths
+      .split(/[\n,]+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (paths.length === 0) {
+      showToast("Enter at least one directory path", "error");
+      return;
+    }
+    setLearnBusy(true);
+    setLearnResult(null);
+    try {
+      const res = await api.learnSkill(
+        {
+          paths,
+          hint: learnHint || undefined,
+          run: learnRun,
+          min_tier: learnMinTier,
+        },
+        selectedProfile || undefined,
+      );
+      setLearnResult(res);
+      if (res.success) {
+        showToast(`Learned skill: ${res.skill_name}`, "success");
+        api
+          .getSkills(selectedProfile || undefined)
+          .then(setSkills)
+          .catch(() => {});
+      } else {
+        showToast(res.error || "Distillation did not commit a skill", "error");
+      }
+    } catch {
+      showToast("Learn request failed", "error");
+    } finally {
+      setLearnBusy(false);
+    }
+  }, [learnPaths, learnHint, learnRun, learnMinTier, selectedProfile, showToast]);
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -501,6 +549,15 @@ export default function SkillsPage() {
                     >
                       New skill
                     </Button>
+                    <Button
+                      size="xs"
+                      outlined
+                      className="uppercase"
+                      onClick={() => setLearnOpen(true)}
+                      prefix={<Sparkles />}
+                    >
+                      Learn from sources
+                    </Button>
                   </div>
                 </div>
               </CardHeader>
@@ -631,6 +688,103 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      <Dialog open={learnOpen} onOpenChange={(o) => { if (!o) setLearnOpen(false); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4" /> Learn a skill from sources
+            </DialogTitle>
+            <DialogDescription>
+              Point Hermes at directories of source material (code, API docs,
+              manuals, PDFs). It distills a draft skill, verifies it in a
+              sandbox, and commits it when verification passes. Paths are
+              resolved on the host the dashboard runs on.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="text-xs uppercase text-muted-foreground">
+                Source paths (one per line, or comma-separated)
+              </label>
+              <textarea
+                className="mt-1 w-full h-24 rounded-none border bg-transparent p-2 text-xs font-mono"
+                placeholder={"/path/to/repo\n/path/to/api-docs"}
+                value={learnPaths}
+                onChange={(e) => setLearnPaths(e.target.value)}
+                disabled={learnBusy}
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase text-muted-foreground">Hint (optional)</label>
+              <Input
+                className="mt-1 h-8 rounded-none text-xs"
+                placeholder="e.g. focus on the auth flow"
+                value={learnHint}
+                onChange={(e) => setLearnHint(e.target.value)}
+                disabled={learnBusy}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <label className="text-xs uppercase text-muted-foreground">Minimum verification tier</label>
+                <select
+                  className="mt-1 block h-8 rounded-none border bg-transparent px-2 text-xs"
+                  value={learnMinTier}
+                  onChange={(e) => setLearnMinTier(e.target.value as "executed" | "checked" | "unverified")}
+                  disabled={learnBusy}
+                >
+                  <option value="unverified">unverified (commit any valid draft)</option>
+                  <option value="checked">checked (parse + commands resolve)</option>
+                  <option value="executed">executed (snippets ran in sandbox)</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <Switch checked={learnRun} onCheckedChange={setLearnRun} disabled={learnBusy} />
+                Run snippets in sandbox
+              </label>
+            </div>
+            {learnResult && (
+              <div className="rounded-none border p-2 text-xs">
+                {learnResult.success ? (
+                  <div className="flex items-center gap-2 text-green-500">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Learned <span className="font-mono">{learnResult.skill_name}</span>
+                    {learnResult.verification && (
+                      <Badge tone="secondary" className="text-[10px]">
+                        {learnResult.verification.tier}
+                      </Badge>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 text-amber-500">
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
+                    <span>{learnResult.error || "Not committed"}</span>
+                  </div>
+                )}
+                <div className="mt-1 text-muted-foreground">
+                  {learnResult.sources_ingested} files ingested
+                  {learnResult.elapsed_seconds
+                    ? ` · ${learnResult.elapsed_seconds.toFixed(1)}s`
+                    : ""}
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button outlined size="xs" onClick={() => setLearnOpen(false)} disabled={learnBusy}>
+                Close
+              </Button>
+              <Button
+                size="xs"
+                onClick={handleLearn}
+                disabled={learnBusy}
+                prefix={learnBusy ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              >
+                {learnBusy ? "Distilling…" : "Distill skill"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <PluginSlot name="skills:bottom" />
     </div>
   );

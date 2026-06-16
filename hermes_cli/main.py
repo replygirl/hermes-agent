@@ -296,6 +296,7 @@ from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.learn import build_learn_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -11411,6 +11412,59 @@ def cmd_pairing(args):
 
     pairing_command(args)
 
+def cmd_learn(args):
+    """Distill a reusable skill from directories of source material."""
+    import json as _json
+
+    from agent.skill_distill import distill_skill_from_dirs, render_distill_result
+
+    paths = list(getattr(args, "paths", None) or [])
+    if not paths:
+        print("learn: at least one directory or file path is required.")
+        return
+
+    use_json = bool(getattr(args, "json", False))
+
+    def _progress(msg: str) -> None:
+        if not use_json:
+            print(f"  · {msg}", flush=True)
+
+    res = distill_skill_from_dirs(
+        paths,
+        hint=getattr(args, "hint", "") or "",
+        category=(getattr(args, "category", "") or None),
+        run_commands=bool(getattr(args, "run", False)),
+        min_tier=getattr(args, "min_tier", "checked"),
+        progress=_progress,
+    )
+
+    if use_json:
+        payload = {
+            "success": res.success,
+            "skill_name": res.skill_name,
+            "skill_path": res.skill_path,
+            "category": res.category,
+            "draft_only": res.draft_only,
+            "sources_ingested": res.sources_ingested,
+            "source_breakdown": res.source_breakdown,
+            "verification": (
+                {
+                    "tier": res.verification.tier,
+                    "passed": res.verification.passed,
+                    "checks": res.verification.checks,
+                    "warnings": res.verification.warnings,
+                    "errors": res.verification.errors,
+                }
+                if res.verification
+                else None
+            ),
+            "error": res.error,
+            "elapsed_seconds": round(res.elapsed_seconds, 2),
+        }
+        print(_json.dumps(payload, indent=2))
+    else:
+        print(render_distill_result(res, markdown=False))
+
 
 def cmd_plugins(args):
     from hermes_cli.plugins_cmd import plugins_command
@@ -11760,6 +11814,11 @@ def main():
     # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+
+    # =========================================================================
+    # learn command  (parser built in hermes_cli/subcommands/learn.py)
+    # =========================================================================
+    build_learn_parser(subparsers, cmd_learn=cmd_learn)
 
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)
