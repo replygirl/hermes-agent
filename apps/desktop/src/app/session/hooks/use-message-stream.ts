@@ -48,6 +48,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos, todoListActive } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -642,6 +643,9 @@ export function useMessageStream({
       })
 
       void refreshSessions().catch(() => undefined)
+      // Sync the freshly-titled row to other windows (e.g. main, when the turn
+      // ran in the pop-out).
+      broadcastSessionsChanged()
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
