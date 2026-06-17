@@ -735,6 +735,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _feishu_available = False
 
+    original_message = message
     if platform == Platform.SLACK and message:
         try:
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
@@ -897,6 +898,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
         )
+
+    # Slack's live gateway adapter is multi-workspace aware: it maps inbound
+    # channels to the workspace/client that delivered the event. The standalone
+    # token path may only have a comma-separated token list, so prefer the live
+    # adapter in gateway processes and fall back only when no adapter exists.
+    if platform == Platform.SLACK:
+        live_result = await _send_via_adapter(
+            platform,
+            pconfig,
+            chat_id,
+            original_message,
+            thread_id=thread_id,
+            media_files=media_files,
+            force_document=force_document,
+        )
+        if isinstance(live_result, dict) and live_result.get("success"):
+            if warning:
+                warnings = list(live_result.get("warnings", []))
+                warnings.append(warning)
+                live_result["warnings"] = warnings
+            return live_result
+        err = str(live_result.get("error", "")) if isinstance(live_result, dict) else ""
+        if err and not err.startswith("No live adapter for platform"):
+            return live_result
 
     last_result = None
     for chunk in chunks:
@@ -1182,26 +1207,61 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
 
 async def _send_slack(token, chat_id, message, thread_ts=None):
-    """Send via Slack Web API."""
+    """Send via Slack Web API.
+
+    ``SLACK_BOT_TOKEN`` can be a comma-separated list in multi-workspace
+    gateways. Try each token independently instead of sending the literal
+    comma-joined string, which Slack rejects as ``invalid_auth``.
+    """
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+        tokens = [t.strip() for t in str(token or "").split(",") if t.strip()]
+        try:
+            from hermes_constants import get_hermes_home
+
+            tokens_file = get_hermes_home() / "slack_tokens.json"
+            if tokens_file.exists():
+                saved = json.loads(tokens_file.read_text(encoding="utf-8"))
+                for entry in saved.values():
+                    tok = entry.get("token", "") if isinstance(entry, dict) else ""
+                    if tok and tok not in tokens:
+                        tokens.append(tok)
+        except Exception:
+            pass
+        if not tokens:
+            return _error("Slack API error: no bot token configured")
+
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        retryable_token_errors = {
+            "invalid_auth",
+            "not_authed",
+            "token_revoked",
+            "account_inactive",
+            "not_in_channel",
+            "channel_not_found",
+        }
+        last_error = "unknown"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
             if thread_ts:
                 payload["thread_ts"] = thread_ts
-            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
-                data = await resp.json()
+            for tok in tokens:
+                headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+                async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
+                    data = await resp.json()
                 if data.get("ok"):
                     return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
-                return _error(f"Slack API error: {data.get('error', 'unknown')}")
+                last_error = data.get("error", "unknown")
+                if last_error not in retryable_token_errors:
+                    break
+        return _error(f"Slack API error: {last_error}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")
 
