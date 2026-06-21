@@ -1802,6 +1802,21 @@ class TestMessageRouting:
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_channel_mention_preserves_bot_id_when_config_false(self, adapter):
+        """strip_bot_mentions=false keeps the mention token in MessageEvent text."""
+        adapter.config.extra["strip_bot_mentions"] = False
+        event = {
+            "text": "<@U_BOT> what's the weather?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "<@U_BOT> what's the weather?"
+
+    @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
         """Messages from bots should be ignored."""
         event = {
