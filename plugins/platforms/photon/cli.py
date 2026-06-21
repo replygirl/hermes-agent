@@ -144,6 +144,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 2. Find or create the "Hermes Agent" project.
     name = args.project_name or photon_auth.DEFAULT_PROJECT_NAME
     dashboard_id = photon_auth.load_dashboard_project_id()
+    proj: dict = {}  # may carry projectSecret for step 3
     try:
         if dashboard_id:
             print("[2/5] Reusing configured Photon project")
@@ -151,11 +152,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             existing = photon_auth.find_project_by_name(token, name)
             if existing and existing.get("id"):
                 dashboard_id = existing["id"]
+                proj = existing
                 print(f"[2/5] Found existing project '{name}'")
             else:
                 print(f"[2/5] Creating Photon project '{name}'...")
                 created = photon_auth.create_project(token, name=name)
                 dashboard_id = created.get("id")
+                proj = created
                 print("  ✓ project created")
     except Exception as e:
         print(f"project setup failed: {e}", file=sys.stderr)
@@ -169,10 +172,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     #    create-time, and the dashboard project id *is* the Spectrum project id
     #    (ids unified), so there's nothing to enable — the id we already have is
     #    the Spectrum id.
+    #
+    #    Current Dashboard API shape: projects may already carry a projectSecret
+    #    in the list/create response; use it directly to avoid an extra
+    #    regenerate-secret round-trip that would invalidate any existing secret.
     try:
         print("[3/5] Provisioning Spectrum credentials...")
         spectrum_id = dashboard_id
-        secret = photon_auth.regenerate_project_secret(token, dashboard_id)
+        secret = proj.get("projectSecret") or photon_auth.regenerate_project_secret(
+            token, dashboard_id
+        )
         photon_auth.store_project_credentials(
             spectrum_project_id=spectrum_id,
             project_secret=secret,
