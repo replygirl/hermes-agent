@@ -2350,6 +2350,50 @@ def _normalize_empty_agent_response(
     return response
 
 
+def _maybe_mark_slack_empty_response_ack(
+    *,
+    source: Any,
+    adapter: Any,
+    event: MessageEvent,
+    agent_result: dict,
+    response: str,
+    platform_config: Optional[PlatformConfig],
+) -> bool:
+    """Return True when Slack should acknowledge an empty response by reaction only."""
+    if _gateway_platform_value(getattr(source, "platform", None)) != "slack":
+        return False
+    turn_exit_reason = str(agent_result.get("turn_exit_reason") or "")
+    # ``agent.turn_finalizer`` may replace the internal ``"(empty)"`` sentinel
+    # with a user-facing explanation before the gateway sees the result. Treat
+    # that diagnostic text as empty for Slack reaction mode so an intentional
+    # no-reply still becomes a quiet acknowledgement instead of a public error.
+    is_empty_terminal = (
+        response in {"", "(empty)"}
+        or turn_exit_reason == "empty_response_exhausted"
+    )
+    if not is_empty_terminal:
+        return False
+    if agent_result.get("failed") or agent_result.get("partial") or agent_result.get("interrupted"):
+        return False
+    if int(agent_result.get("api_calls", 0) or 0) <= 0:
+        return False
+
+    extra = getattr(platform_config, "extra", None) or {}
+    behavior = str(extra.get("empty_response_behavior", "message") or "message").strip().lower()
+    if behavior not in {"reaction", "react"}:
+        return False
+
+    if adapter is None or not hasattr(adapter, "mark_empty_response_ack"):
+        return False
+    message_id = _reply_anchor_for_event(event)
+    if not message_id:
+        return False
+
+    reaction = str(extra.get("empty_response_reaction", "thumbsup") or "thumbsup").strip().strip(":") or "thumbsup"
+    adapter.mark_empty_response_ack(str(message_id), reaction)
+    return True
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -9592,6 +9636,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            _platform_config = None
+            try:
+                _platform_config = self.config.platforms.get(source.platform)
+            except Exception:
+                _platform_config = None
+            _empty_response_reaction_ack = _maybe_mark_slack_empty_response_ack(
+                source=source,
+                adapter=self.adapters.get(source.platform),
+                event=event,
+                agent_result=agent_result,
+                response=response,
+                platform_config=_platform_config,
+            )
             try:
                 from gateway.response_filters import is_intentional_silence_agent_result
                 _intentional_silence = is_intentional_silence_agent_result(
@@ -9605,7 +9662,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
+            if _empty_response_reaction_ack:
+                response = ""
+            elif response == "(empty)" and not _intentional_silence:
                 response = (
                     "⚠️ The model returned no response after processing tool "
                     "results. This can happen with some models — try again or "
@@ -9655,7 +9714,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
+            if not _empty_response_reaction_ack and not _intentional_silence:
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )

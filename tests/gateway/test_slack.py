@@ -2415,7 +2415,7 @@ class TestReactions:
             side_effect=Exception("already_reacted")
         )
         result = await adapter._add_reaction("C123", "ts1", "eyes")
-        assert result is False
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_remove_reaction_calls_api(self, adapter):
@@ -2516,6 +2516,45 @@ class TestReactions:
         assert add_calls[0].kwargs["name"] == "x"
         assert len(remove_calls) == 1
         assert remove_calls[0].kwargs["name"] == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_empty_response_ack_uses_configured_reaction(self, adapter):
+        """Reaction-only empty replies should use the configured final emoji."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+
+        from gateway.platforms.base import (
+            MessageEvent,
+            MessageType,
+            SessionSource,
+            ProcessingOutcome,
+        )
+        from gateway.config import Platform
+
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+            user_id="U_USER",
+        )
+        adapter._reacting_message_ids.add("1234567890.000005")
+        adapter.mark_empty_response_ack("1234567890.000005", "no_mouth")
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000005",
+        )
+
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "no_mouth"
+        assert len(remove_calls) == 1
+        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert "1234567890.000005" not in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
     async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
@@ -3043,6 +3082,34 @@ class TestSlashCommands:
         await adapter._handle_slash_command(command)
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "what's the weather today?"
+
+    @pytest.mark.asyncio
+    async def test_prefixed_native_slash(self, adapter):
+        """/imogenie-btw should dispatch as /btw for profile-specific apps."""
+        adapter.config.extra["slash_prefix"] = "imogenie"
+        command = {
+            "command": "/imogenie-btw",
+            "text": "fix the failing test",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/btw fix the failing test"
+
+    @pytest.mark.asyncio
+    async def test_prefixed_catch_all_slash(self, adapter):
+        """/imogenie help should behave like /hermes help."""
+        adapter.config.extra["slash_prefix"] = "imogenie"
+        command = {
+            "command": "/imogenie",
+            "text": "help",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/help"
 
 
 # ---------------------------------------------------------------------------

@@ -742,6 +742,16 @@ platform_toolsets:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #
+# slack:
+#   require_mention: true            # Require @mention in channels (default: true)
+#   strict_mention: false            # Require mention in the new message, not only thread history
+#   allow_bots: false                # Ignore bot-authored messages by default
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   reactions: true                  # Show processing reactions (default: true)
+#   strip_bot_mentions: true         # Remove the bot's own <@U...> token from model text (default: true; set false in shared-bot threads)
+#   empty_response_behavior: message # message | reaction
+#   empty_response_reaction: no_mouth # Emoji name used when behavior=reaction
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

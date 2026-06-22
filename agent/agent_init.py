@@ -73,8 +73,9 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
 
     ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}``. The same
     text is printed inline for CLI users and replayed via ``status_callback``
-    for gateway users, so it must be self-contained and include the exact
-    opt-back-out command.
+    for gateway users when ``compression.codex_gpt55_autoraise_notice`` is
+    enabled, so it must be self-contained and include the exact opt-back-out
+    command.
     """
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
@@ -1307,7 +1308,12 @@ def init_agent(
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise_notice = str(
+        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
+    ).lower() in {"true", "1", "yes"}
+    _model_cthresh = None
     agent._compression_threshold_autoraised = None
+    agent._compression_threshold_autoraise_notice = _codex_gpt55_autoraise_notice
     try:
         from agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,
@@ -1540,6 +1546,27 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
+        # Plugin context engines own their base threshold (for example LCM can
+        # read lcm.context_threshold independently), but route-specific Hermes
+        # overrides such as Codex gpt-5.5's 85% cap-aware trigger still need to
+        # apply once the provider/model route is known.
+        _context_engine_route_threshold_override = (
+            compression_enabled and _model_cthresh is not None
+        )
+        if _context_engine_route_threshold_override:
+            try:
+                agent.context_compressor.threshold_percent = compression_threshold
+                _engine_config = getattr(agent.context_compressor, "_config", None)
+                if (
+                    _engine_config is not None
+                    and hasattr(_engine_config, "context_threshold")
+                ):
+                    _engine_config.context_threshold = compression_threshold
+            except Exception as _ce_threshold_err:
+                _ra().logger.debug(
+                    "Context engine ignored route-specific threshold override: %s",
+                    _ce_threshold_err,
+                )
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -1558,6 +1585,17 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        if _context_engine_route_threshold_override:
+            try:
+                agent.context_compressor.threshold_percent = compression_threshold
+                agent.context_compressor.threshold_tokens = int(
+                    _plugin_ctx_len * compression_threshold
+                )
+            except Exception as _ce_threshold_err:
+                _ra().logger.debug(
+                    "Context engine ignored route-specific threshold token update: %s",
+                    _ce_threshold_err,
+                )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1723,7 +1761,11 @@ def init_agent(
         # gateway users get the same text replayed via _compression_warning on
         # turn 1 (set below, after the warning slot is initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if (
+            _autoraise
+            and compression_enabled
+            and getattr(agent, "_compression_threshold_autoraise_notice", True)
+        ):
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
@@ -1734,7 +1776,11 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if (
+        _autoraise
+        and compression_enabled
+        and getattr(agent, "_compression_threshold_autoraise_notice", True)
+    ):
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

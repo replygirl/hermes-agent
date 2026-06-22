@@ -85,6 +85,7 @@ compression:
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise_notice: true  # Show the one-time opt-out notice (default: true)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -103,6 +104,7 @@ auxiliary:
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time CLI/gateway notice when the route-specific autoraise changes the effective threshold. Set `false` to keep the 85% trigger silently |
 
 ### Codex gpt-5.5 threshold autoraise
 
@@ -113,7 +115,13 @@ half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
 trigger to **85%** (~231K) and prints a one-time notice with the opt-out
 command. Only this exact route is affected; gpt-5.5 on any other provider keeps
-your global `threshold`. To opt back down to the global value:
+your global `threshold`. To keep the 85% trigger but suppress the notice:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise_notice false
+```
+
+To opt back down to the global value:
 
 ```bash
 hermes config set compression.codex_gpt55_autoraise false
