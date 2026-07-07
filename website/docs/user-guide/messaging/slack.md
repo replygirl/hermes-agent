@@ -78,6 +78,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:write` | Open and manage DMs |
 | `mpim:history` | Read group direct message (multi-person DM) history |
 | `mpim:read` | View basic group DM info |
+| `reactions:write` | Add lightweight status/ack reactions without posting messages |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
@@ -418,6 +419,37 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
 A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
 :::
+
+### Empty Response Acknowledgements
+
+Slack can acknowledge an agent run that intentionally produced no visible reply by reacting to the triggering message instead of posting a public warning. This is useful in multi-agent threads where even a "no response generated" bot message can wake another agent.
+
+```yaml
+slack:
+  reactions: true
+  empty_response_behavior: reaction   # default: message
+  empty_response_reaction: no_mouth    # emoji name without colons
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `slack.empty_response_behavior` | `"message"` | `"message"` posts the traditional warning; `"reaction"` suppresses that warning and reacts to the triggering Slack message instead. |
+| `slack.empty_response_reaction` | `"thumbsup"` | Emoji name used for reaction-only empty-response acknowledgement. Use names without colons, e.g. `no_mouth`, `thumbsup`, or `white_check_mark`. |
+
+This requires the Slack app's bot token to include `reactions:write` and the app to be reinstalled after adding that scope.
+
+### Bot mention tokens
+
+By default Hermes strips the bot's own `<@U...>` mention token out of the text it sends to the model (both the current message and fetched thread context). Set `strip_bot_mentions: false` to keep the raw token — useful when several Hermes profiles share the same Slack threads and the model needs to reason about *which* bot was addressed.
+
+```yaml
+slack:
+  strip_bot_mentions: false   # default: true (strip the bot's own mention token)
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `slack.strip_bot_mentions` | `true` | When `false`, keeps raw `<@U...>` tokens in the message text delivered to the model. Equivalent env var: `SLACK_STRIP_BOT_MENTIONS`. |
 
 ### Channel allowlist (`allowed_channels`)
 

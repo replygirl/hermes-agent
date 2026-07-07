@@ -471,6 +471,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
+        # Message IDs whose successful empty response should be acknowledged
+        # with a reaction only instead of the normal success emoji.
+        self._empty_response_ack_reactions: Dict[str, str] = {}
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -486,6 +489,47 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+
+    def _slack_slash_prefix(self) -> str:
+        """Return an optional profile-specific native slash prefix.
+
+        Slack native slash command names may only contain lowercase letters,
+        digits, hyphens, and underscores. A prefix of ``imogenie`` lets a
+        profile expose ``/imogenie-help`` alongside another Hermes app that
+        already owns ``/help`` in the same workspace.
+        """
+        raw = (
+            self.config.extra.get("slash_prefix")
+            or self.config.extra.get("slash_command_prefix")
+            or os.getenv("SLACK_SLASH_PREFIX")
+            or os.getenv("SLACK_SLASH_COMMAND_PREFIX")
+            or ""
+        )
+        prefix = re.sub(r"[^a-z0-9_-]", "", str(raw).lower()).strip("-_")
+        return prefix[:32]
+
+    def _slack_native_slash_names(self) -> List[str]:
+        """Return Slack slash names this adapter should accept.
+
+        By default this is the registry's native command set. When
+        ``slash_prefix`` is configured, also accept ``/<prefix>`` as a
+        catch-all and ``/<prefix>-<command>`` aliases that are remapped before
+        dispatch.
+        """
+        from hermes_cli.commands import slack_native_slashes
+
+        names = [name for name, _d, _h in slack_native_slashes()]
+        prefix = self._slack_slash_prefix()
+        if prefix:
+            prefixed = [prefix]
+            for name in names:
+                if name == "hermes":
+                    continue
+                candidate = f"{prefix}-{name}"[:32]
+                if candidate not in names and candidate not in prefixed:
+                    prefixed.append(candidate)
+            names.extend(prefixed)
+        return names
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1147,10 +1191,9 @@ class SlackAdapter(BasePlatformAdapter):
             # routes the command event through the socket regardless of the
             # manifest's request URL, but it will not deliver an event for
             # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
             import re as _re
 
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            _slash_names = self._slack_native_slash_names()
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
@@ -2023,7 +2066,12 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            # Don't log as error — may fail if already reacted or missing scope
+            # Treat this as idempotent success: the goal is to ensure the
+            # message has the bot's reaction, and Slack returns already_reacted
+            # when a retry/replay finds it already present.
+            if "already_reacted" in str(e):
+                return True
+            # Don't log as error — may fail if missing scope or permissions.
             logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
             return False
 
@@ -2043,6 +2091,14 @@ class SlackAdapter(BasePlatformAdapter):
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+
+    def mark_empty_response_ack(self, message_id: str, emoji: str = "thumbsup") -> None:
+        """Mark a Slack message for reaction-only empty-response acknowledgement."""
+        if not message_id:
+            return
+        cleaned = str(emoji or "thumbsup").strip().strip(":") or "thumbsup"
+        self._empty_response_ack_reactions[str(message_id)] = cleaned
+        self._reacting_message_ids.add(str(message_id))
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
@@ -2069,7 +2125,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id:
             return
         await self._remove_reaction(channel_id, ts, "eyes")
-        if outcome == ProcessingOutcome.SUCCESS:
+        ack_emoji = self._empty_response_ack_reactions.pop(ts, None)
+        if ack_emoji:
+            await self._add_reaction(channel_id, ts, ack_emoji)
+        elif outcome == ProcessingOutcome.SUCCESS:
             await self._add_reaction(channel_id, ts, "white_check_mark")
         elif outcome == ProcessingOutcome.FAILURE:
             await self._add_reaction(channel_id, ts, "x")
@@ -3916,6 +3975,15 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
+
+        prefix = self._slack_slash_prefix()
+        if prefix:
+            if slash_name == prefix:
+                # Profile-specific catch-all, e.g. /imogenie help.
+                slash_name = "hermes"
+            elif slash_name.startswith(f"{prefix}-"):
+                # Profile-specific native alias, e.g. /imogenie-help.
+                slash_name = slash_name[len(prefix) + 1 :]
 
         # Track which workspace owns this channel
         if team_id and channel_id:

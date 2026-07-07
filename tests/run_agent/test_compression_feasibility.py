@@ -290,6 +290,78 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
     )
 
 
+def _make_codex_gpt55_autoraise_agent(*, notice_enabled=None) -> AIAgent:
+    """Initialize a minimal Codex gpt-5.5 agent that triggers threshold autoraise."""
+
+    class _StubCompressor:
+        def __init__(self, *args, **kwargs):
+            self.context_length = 272_000
+            self.threshold_percent = kwargs["threshold_percent"]
+            self.threshold_tokens = int(self.context_length * self.threshold_percent)
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_session_start(self, *args, **kwargs):
+            return None
+
+    compression_cfg = {
+        "enabled": True,
+        "threshold": 0.50,
+        "codex_gpt55_autoraise": True,
+    }
+    if notice_enabled is not None:
+        compression_cfg["codex_gpt55_autoraise_notice"] = notice_enabled
+    cfg = {"compression": compression_cfg}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.agent_init.ContextCompressor", new=_StubCompressor),
+    ):
+        return AIAgent(
+            api_key="codex-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+
+def test_codex_gpt55_autoraise_notice_defaults_on():
+    """Autoraise still stores the one-time gateway notice by default."""
+    agent = _make_codex_gpt55_autoraise_agent()
+    compressor = getattr(agent, "context_compressor")
+    warning = getattr(agent, "_compression_warning")
+
+    assert compressor.threshold_percent == 0.85
+    assert getattr(agent, "_compression_threshold_autoraised") == {
+        "model": "gpt-5.5",
+        "from": 0.50,
+        "to": 0.85,
+    }
+    assert warning is not None
+    assert "Opt back out" in warning
+
+
+def test_codex_gpt55_autoraise_notice_can_be_disabled_without_disabling_threshold():
+    """Notice suppression must not opt out of the 85% Codex gpt-5.5 trigger."""
+    agent = _make_codex_gpt55_autoraise_agent(notice_enabled=False)
+    compressor = getattr(agent, "context_compressor")
+
+    assert compressor.threshold_percent == 0.85
+    assert getattr(agent, "_compression_threshold_autoraised") == {
+        "model": "gpt-5.5",
+        "from": 0.50,
+        "to": 0.85,
+    }
+    assert getattr(agent, "_compression_warning") is None
+
+
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warns_when_no_auxiliary_provider(mock_get_client):
     """Warning emitted when no auxiliary provider is configured."""

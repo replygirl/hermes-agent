@@ -73,8 +73,9 @@ def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
 
     ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
     The same text is printed inline for CLI users and replayed via
-    ``status_callback`` for gateway users, so it must be self-contained and
-    include the exact opt-back-out command.
+    ``status_callback`` for gateway users when
+    ``compression.codex_gpt55_autoraise_notice`` is enabled, so it must be
+    self-contained and include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
     # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5 family is
@@ -1517,7 +1518,9 @@ def init_agent(
     _codex_gpt55_autoraise_notice = str(
         _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
+    _model_cthresh = None
     agent._compression_threshold_autoraised = None
+    agent._compression_threshold_autoraise_notice = _codex_gpt55_autoraise_notice
     try:
         from agent.auxiliary_client import (
             _compression_threshold_for_model as _cthresh_fn,

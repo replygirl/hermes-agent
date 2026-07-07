@@ -440,6 +440,81 @@ class TestGatewaySurfacesNullResponse:
         lowered = result.lower()
         assert "send it again" in lowered or "try again" in lowered
 
+    def test_slack_reaction_mode_marks_empty_response_ack(self):
+        """Slack can replace synthetic empty-response warnings with a reaction ack."""
+        from gateway.config import Platform, PlatformConfig
+        from gateway.run import _maybe_mark_slack_empty_response_ack
+
+        adapter = MagicMock()
+        event = types.SimpleNamespace(
+            message_id="1234567890.000006",
+            source=types.SimpleNamespace(platform=Platform.SLACK),
+        )
+        platform_config = PlatformConfig(
+            extra={
+                "empty_response_behavior": "reaction",
+                "empty_response_reaction": "no_mouth",
+            }
+        )
+        agent_result = {
+            "final_response": None,
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+        }
+
+        marked = _maybe_mark_slack_empty_response_ack(
+            source=event.source,
+            adapter=adapter,
+            event=event,
+            agent_result=agent_result,
+            response="",
+            platform_config=platform_config,
+        )
+
+        assert marked is True
+        adapter.mark_empty_response_ack.assert_called_once_with(
+            "1234567890.000006", "no_mouth"
+        )
+
+    def test_slack_reaction_mode_marks_finalizer_empty_explainer_ack(self):
+        """Slack treats the turn-finalizer empty-response explainer as quiet ackable."""
+        from gateway.config import Platform, PlatformConfig
+        from gateway.run import _maybe_mark_slack_empty_response_ack
+
+        adapter = MagicMock()
+        event = types.SimpleNamespace(
+            message_id="1234567890.000007",
+            source=types.SimpleNamespace(platform=Platform.SLACK),
+        )
+        platform_config = PlatformConfig(
+            extra={
+                "empty_response_behavior": "reaction",
+                "empty_response_reaction": "no_mouth",
+            }
+        )
+        agent_result = {
+            "final_response": "⚠️ Processing completed but no response was generated.",
+            "api_calls": 3,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "empty_response_exhausted",
+        }
+
+        marked = _maybe_mark_slack_empty_response_ack(
+            source=event.source,
+            adapter=adapter,
+            event=event,
+            agent_result=agent_result,
+            response=agent_result["final_response"],
+            platform_config=platform_config,
+        )
+
+        assert marked is True
+        adapter.mark_empty_response_ack.assert_called_once_with(
+            "1234567890.000007", "no_mouth"
+        )
+
 
 # ===========================================================================
 # Prune: finalize_orphaned_compression_sessions

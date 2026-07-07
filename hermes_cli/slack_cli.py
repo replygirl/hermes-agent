@@ -78,6 +78,7 @@ def _build_full_manifest(
         "im:write",
         "mpim:history",
         "mpim:read",
+        "reactions:write",
         "users:read",
     ]
 
