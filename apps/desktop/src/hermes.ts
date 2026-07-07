@@ -1188,3 +1188,101 @@ export function runDebugShare(): Promise<DebugShareResponse> {
     timeoutMs: 120_000
   })
 }
+
+type ConsoleApiRequest = Parameters<Window['hermesDesktop']['api']>[0]
+
+async function consoleRawApi<T>(request: ConsoleApiRequest): Promise<T> {
+  if (window.hermesDesktop?.api) {
+    return window.hermesDesktop.api<T>(request)
+  }
+
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+  const headers = new Headers()
+  const token = window.__HERMES_SESSION_TOKEN__
+  if (token) {
+    headers.set('X-Hermes-Session-Token', token)
+  }
+  if (request.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  try {
+    const response = await fetch(request.path, {
+      body: request.body === undefined ? undefined : JSON.stringify(request.body),
+      credentials: 'include',
+      headers,
+      method: request.method ?? (request.body === undefined ? 'GET' : 'POST'),
+      signal: controller.signal
+    })
+    if (!response.ok) {
+      throw new Error(`${response.status}: ${await response.text().catch(() => response.statusText)}`)
+    }
+    return response.json() as Promise<T>
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+function paginatedSessionsFromResult(result: PaginatedSessions, limit: number): PaginatedSessions {
+  return {
+    ...result,
+    sessions: result.sessions.slice(0, limit),
+    offset: 0
+  }
+}
+
+export const hermesDesktopConsole = {
+  rawApi: <T>(request: ConsoleApiRequest) => consoleRawApi<T>(request),
+  listSessions: async (
+    limit = 40,
+    minMessages = 0,
+    archived: 'exclude' | 'include' | 'only' = 'exclude',
+    order: 'created' | 'recent' = 'recent'
+  ) => {
+    const result = await consoleRawApi<PaginatedSessions>({
+      path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+      timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    })
+    return paginatedSessionsFromResult(result, limit)
+  },
+  listAllProfileSessions: async (
+    limit = 40,
+    minMessages = 0,
+    archived: 'exclude' | 'include' | 'only' = 'exclude',
+    order: 'created' | 'recent' = 'recent',
+    profile: 'all' | (string & {}) = 'all',
+    filter: SessionSourceFilter = {}
+  ) => {
+    const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+    const excludeParam = filter.excludeSources?.length
+      ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+      : ''
+    const result = await consoleRawApi<PaginatedSessions>({
+      path:
+        `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+        `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+      timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    })
+    return paginatedSessionsFromResult(result, limit)
+  },
+  searchSessions: (query: string) => consoleRawApi<SessionSearchResponse>({ path: `/api/sessions/search?q=${encodeURIComponent(query)}` }),
+  getSession: (id: string, profile?: string | null) => {
+    const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+    return consoleRawApi<SessionInfo>({ ...(profile ? { profile } : {}), path: `/api/sessions/${encodeURIComponent(id)}${suffix}` })
+  },
+  getSessionMessages: (id: string, profile?: string | null) => {
+    const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+    return consoleRawApi<SessionMessagesResponse>({ ...(profile ? { profile } : {}), path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}` })
+  },
+  getActionStatus: (name: string, lines = 200) =>
+    consoleRawApi<ActionStatusResponse>({ path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}` })
+}
+
+if (typeof window !== 'undefined') {
+  window.hermes = {
+    ...(window.hermes ?? {}),
+    api: hermesDesktopConsole.rawApi,
+    desktop: hermesDesktopConsole
+  }
+}

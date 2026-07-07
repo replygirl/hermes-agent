@@ -9,6 +9,20 @@ export {}
 
 declare global {
   interface Window {
+    __HERMES_SESSION_TOKEN__?: string
+    /** Low-friction console/API surface for DevTools and automation. */
+    hermes?: {
+      api: Window['hermesDesktop']['api']
+      desktop: {
+        getActionStatus: (name: string, lines?: number) => Promise<ActionStatusResponse>
+        getSession: (id: string, profile?: string | null) => Promise<SessionInfo>
+        getSessionMessages: (id: string, profile?: string | null) => Promise<SessionMessagesResponse>
+        listAllProfileSessions: (limit?: number, minMessages?: number, archived?: 'exclude' | 'include' | 'only', order?: 'created' | 'recent', profile?: 'all' | (string & {}), filter?: { source?: string; excludeSources?: string[] }) => Promise<PaginatedSessions>
+        listSessions: (limit?: number, minMessages?: number, archived?: 'exclude' | 'include' | 'only', order?: 'created' | 'recent') => Promise<PaginatedSessions>
+        rawApi: Window['hermesDesktop']['api']
+        searchSessions: (query: string) => Promise<SessionSearchResponse>
+      }
+    }
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
