@@ -90,6 +90,46 @@ class ProfileGatewayProcess:
     pid: int
 
 
+def _planned_restart_notification_path() -> Path:
+    """Path consumed by the next gateway startup to announce it is back online."""
+    return get_hermes_home() / ".restart_pending.json"
+
+
+def _write_planned_restart_notification_marker(*, via_service: bool, detached: bool = False) -> None:
+    """Ask the next gateway process to send home-channel startup notifications.
+
+    In-chat `/restart` writes `.restart_notify.json` with an exact reply target.
+    CLI/service restarts have no requester chat, so they use the broader
+    `.restart_pending.json` marker that `gateway.run` already consumes after
+    adapters connect.  Write it before terminating the old process so a paired
+    "gateway online" message follows any shutdown notice.
+    """
+    try:
+        import json
+        import time
+
+        path = _planned_restart_notification_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "requested_at": time.time(),
+            "via_service": bool(via_service),
+            "detached": bool(detached),
+            "source": "cli",
+        }
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as exc:
+        logger.debug("Failed to write planned restart notification marker: %s", exc)
+
+
+def _clear_planned_restart_notification_marker() -> None:
+    try:
+        _planned_restart_notification_path().unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Failed to clear planned restart notification marker: %s", exc)
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -3226,6 +3266,7 @@ def systemd_restart(system: bool = False):
     _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)
     _sync_hermes_home_from_systemd_unit(system=system)
+    _write_planned_restart_notification_marker(via_service=True)
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
@@ -4252,6 +4293,7 @@ def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
+    _write_planned_restart_notification_marker(via_service=True)
     from gateway.status import get_running_pid
 
     try:

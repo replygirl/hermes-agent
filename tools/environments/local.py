@@ -510,6 +510,48 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     return env
 
 
+def _normalize_shell_name(shell: str | None) -> str:
+    """Normalize the configured local shell name.
+
+    Only bash and zsh have snapshot support.  Keep bash as the default for
+    backwards compatibility; require an explicit terminal.shell=zsh opt-in.
+    """
+    raw = (shell or os.environ.get("TERMINAL_SHELL") or "bash").strip()
+    if not raw:
+        return "bash"
+    name = os.path.basename(raw).lower()
+    if name in {"bash", "zsh"}:
+        return name
+    raise ValueError(
+        f"Unsupported terminal.shell {shell!r}; supported local shells are 'bash' and 'zsh'."
+    )
+
+
+def _find_configured_shell(shell: str | None = None) -> tuple[str, str]:
+    """Find the configured local shell executable and return (path, flavor)."""
+    flavor = _normalize_shell_name(shell)
+    if _IS_WINDOWS and flavor != "bash":
+        raise RuntimeError("terminal.shell=zsh is only supported on POSIX local backends")
+
+    raw = (shell or os.environ.get("TERMINAL_SHELL") or flavor).strip()
+    if raw and (os.path.sep in raw or (_IS_WINDOWS and ":" in raw)):
+        expanded = os.path.expanduser(raw)
+        if os.path.isfile(expanded):
+            return expanded, flavor
+        raise RuntimeError(f"Configured terminal shell not found: {raw}")
+
+    if flavor == "zsh":
+        found = shutil.which("zsh")
+        if found:
+            return found, flavor
+        for candidate in ("/bin/zsh", "/usr/bin/zsh", "/opt/homebrew/bin/zsh"):
+            if os.path.isfile(candidate):
+                return candidate, flavor
+        raise RuntimeError("zsh not found. Install zsh or set terminal.shell back to bash.")
+
+    return _find_bash(), "bash"
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -856,15 +898,16 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         return [], True
 
 
-def _resolve_shell_init_files() -> list[str]:
+def _resolve_shell_init_files(shell: str | None = None) -> list[str]:
     """Resolve the list of files to source before the login-shell snapshot.
 
     Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
-    exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
+    exist on disk, so a missing rc file never breaks the snapshot.
     The ``auto_source_bashrc`` path runs only when the user hasn't supplied
     an explicit list — once they have, Hermes trusts them.
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
+    shell_name = _normalize_shell_name(shell)
 
     candidates: list[str] = []
     if explicit:
@@ -874,18 +917,18 @@ def _resolve_shell_init_files() -> list[str]:
         # pyenv that self-install into the user's shell rc land on PATH in
         # the captured snapshot.
         #
-        # ~/.profile and ~/.bash_profile run first because they have no
+        # Bash: ~/.profile and ~/.bash_profile run first because they have no
         # interactivity guard — installers like ``n`` and ``nvm`` append
         # their PATH export there on most distros, and a non-interactive
-        # ``. ~/.profile`` picks that up.
+        # ``. ~/.profile`` picks that up.  ~/.bashrc runs last.
         #
-        # ~/.bashrc runs last. On Debian/Ubuntu the default bashrc starts
-        # with ``case $- in *i*) ;; *) return;; esac`` and exits early
-        # when sourced non-interactively, which is why sourcing bashrc
-        # alone misses nvm/n PATH additions placed below that guard. We
-        # still include it so users who put PATH logic in bashrc (and
-        # stripped the guard, or never had one) keep working.
-        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
+        # Zsh: login zsh already reads zprofile, but we include it here to
+        # match bash's explicit-profile capture and then source zshrc so
+        # aliases/functions from the user's interactive zsh are available.
+        if shell_name == "zsh":
+            candidates.extend(["~/.zprofile", "~/.zshrc"])
+        else:
+            candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
 
     resolved: list[str] = []
     for raw in candidates:
@@ -927,10 +970,17 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(
+        self,
+        cwd: str = "",
+        timeout: int = 60,
+        env: dict | None = None,
+        shell: str | None = None,
+    ):
+        self._shell_path, self._shell_flavor = _find_configured_shell(shell)
         if cwd:
             cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env or {})
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -989,18 +1039,18 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        shell = self._shell_path
         # For login-shell invocations (used by init_session to build the
-        # environment snapshot), prepend sources for the user's bashrc /
-        # custom init files so tools registered outside bash_profile
-        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
-        # Non-login invocations are already sourcing the snapshot and
-        # don't need this.
+        # environment snapshot), prepend sources for the user's rc / custom
+        # init files so tools registered outside login-only profile files
+        # (nvm, asdf, pyenv, zsh aliases/functions, …) end up in the
+        # captured snapshot.  Non-login invocations already source the
+        # snapshot and don't need this.
         if login:
-            init_files = _resolve_shell_init_files()
+            init_files = _resolve_shell_init_files(self._shell_flavor)
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        args = [shell, "-l", "-c", cmd_string] if login else [shell, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

@@ -322,3 +322,17 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_terminal_shell_is_bridged_everywhere():
+    """``terminal.shell`` selects the local shell used by the terminal tool.
+
+    A user whose interactive environment is zsh needs the same config to work
+    in CLI, gateway, and ``hermes config set`` flows; otherwise aliases and
+    functions like ``claude-rg`` are visible in one entry point but missing in
+    another.
+    """
+    assert "shell" in _cli_env_map_keys()
+    assert "shell" in _gateway_env_map_keys()
+    assert "shell" in _save_config_env_sync_keys()
+    assert "TERMINAL_SHELL" in _terminal_tool_env_var_names()

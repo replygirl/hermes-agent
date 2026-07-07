@@ -301,6 +301,11 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Shell syntax used for snapshot capture/refresh.  Existing non-local
+    # backends execute bash, so bash remains the default; LocalEnvironment can
+    # set this to "zsh" before init_session() runs.
+    _shell_flavor: str = "bash"
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
@@ -350,6 +355,50 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _snapshot_dump_commands(self, quoted_snap: str) -> str:
+        """Return shell code that writes env/functions/aliases to snapshot.
+
+        The snapshot is sourced before every command.  Refreshing the whole
+        snapshot after each command preserves functions and aliases from the
+        selected login shell instead of overwriting them with env vars only.
+        """
+        if getattr(self, "_shell_flavor", "bash") == "zsh":
+            return "\n".join(
+                [
+                    f"typeset -px > {quoted_snap}",
+                    f"functions >> {quoted_snap} 2>/dev/null || true",
+                    f"alias -L >> {quoted_snap} 2>/dev/null || true",
+                    f"echo 'setopt aliases 2>/dev/null || true' >> {quoted_snap}",
+                    f"echo 'set +e' >> {quoted_snap}",
+                    f"echo 'set +u' >> {quoted_snap}",
+                ]
+            )
+
+        return "\n".join(
+            [
+                f"export -p > {quoted_snap}",
+                # Dump function definitions, filtering out private (``_``-prefixed)
+                # helpers — mainly bash-completion internals (``_git``, ``_make``…)
+                # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
+                # is line-based: it strips the function *header* line but leaves the
+                # orphaned ``{ … }`` body behind, which corrupts the snapshot and
+                # makes every sourced command fail (e.g. exit 127).  Selecting the
+                # wanted names with ``declare -F`` first, then dumping only those
+                # whole definitions, preserves the filter's intent without ever
+                # tearing a function body.  The non-empty guard matters: bare
+                # ``declare -f`` with no name args dumps ALL functions, so an empty
+                # name list (only private funcs present) would otherwise leak the
+                # very functions we meant to drop.
+                f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true",
+                f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+                f">> {quoted_snap} 2>/dev/null || true",
+                f"alias -p >> {quoted_snap}",
+                f"echo 'shopt -s expand_aliases' >> {quoted_snap}",
+                f"echo 'set +e' >> {quoted_snap}",
+                f"echo 'set +u' >> {quoted_snap}",
+            ]
+        )
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -395,26 +444,11 @@ class BaseEnvironment(ABC):
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
-            f"export -p > {_snap_tmp}\n"
-            # Dump function definitions, filtering out private (``_``-prefixed)
-            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
-            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
-            # is line-based: it strips the function *header* line but leaves the
-            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
-            # makes every sourced command fail (e.g. exit 127).  Selecting the
-            # wanted names with ``declare -F`` first, then dumping only those
-            # whole definitions, preserves the filter's intent without ever
-            # tearing a function body.  The non-empty guard matters: bare
-            # ``declare -f`` with no name args dumps ALL functions, so an empty
-            # name list (only private funcs present) would otherwise leak the
-            # very functions we meant to drop.
-            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
-            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
-            f">> {_snap_tmp} 2>/dev/null || true\n"
-            f"alias -p >> {_snap_tmp}\n"
-            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
-            f"echo 'set +e' >> {_snap_tmp}\n"
-            f"echo 'set +u' >> {_snap_tmp}\n"
+            # Assemble the whole snapshot (env/functions/aliases, bash- or
+            # zsh-flavored) into the per-writer temp file, then publish it
+            # atomically below.  ``_snapshot_dump_commands`` dispatches on
+            # ``_shell_flavor`` so a zsh local terminal captures zsh syntax.
+            f"{self._snapshot_dump_commands(_snap_tmp)}\n"
             # Publish atomically only if assembly succeeded; otherwise drop the
             # partial temp rather than leave it to be sourced or orphaned.
             f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
@@ -503,14 +537,17 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (atomic replacement to avoid races).
-        # Chain mv on the export succeeding so a failed/partial dump never
-        # replaces a good snapshot; drop the temp on failure so it isn't
-        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # Re-dump env vars/functions/aliases to snapshot (last-writer-wins for
+        # concurrent calls) using atomic replacement to avoid races.  Assemble
+        # the full flavored dump into the per-writer temp file; only mv it over
+        # the live snapshot if assembly succeeded, else drop the partial temp so
+        # a failed dump never replaces a good snapshot or leaks an orphan
+        # (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
-                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+                f"{{ {self._snapshot_dump_commands(_snap_tmp)}\n}} "
+                f"2>/dev/null && mv -f {_snap_tmp} {_quoted_snap} 2>/dev/null "
+                f"|| rm -f {_snap_tmp} 2>/dev/null || true"
             )
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)

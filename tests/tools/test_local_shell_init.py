@@ -128,6 +128,40 @@ class TestResolveShellInitFiles:
         assert resolved == [str(custom)]
         assert str(bashrc) not in resolved
 
+    def test_zsh_auto_sources_zprofile_and_zshrc(self, tmp_path, monkeypatch):
+        zprofile = tmp_path / ".zprofile"
+        zprofile.write_text('export FROM_ZPROFILE=1\n')
+        zshrc = tmp_path / ".zshrc"
+        zshrc.write_text('alias probe_alias="echo alias-ok"\n')
+        bashrc = tmp_path / ".bashrc"
+        bashrc.write_text('export FROM_BASHRC=wrong\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            resolved = _resolve_shell_init_files("zsh")
+
+        assert resolved == [str(zprofile), str(zshrc)]
+        assert str(bashrc) not in resolved
+
+    def test_explicit_list_still_wins_for_zsh(self, tmp_path, monkeypatch):
+        zshrc = tmp_path / ".zshrc"
+        zshrc.write_text('export FROM_ZSHRC=1\n')
+        custom = tmp_path / "custom.zsh"
+        custom.write_text('export FROM_CUSTOM=1\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([str(custom)], True),
+        ):
+            resolved = _resolve_shell_init_files("zsh")
+
+        assert resolved == [str(custom)]
+        assert str(zshrc) not in resolved
+
     def test_expands_home_and_env_vars(self, tmp_path, monkeypatch):
         target = tmp_path / "rc" / "custom.sh"
         target.parent.mkdir()
@@ -255,6 +289,39 @@ class TestSnapshotEndToEnd:
         output = result.get("output", "")
         assert "PROBE=probe-ok" in output
         assert "/opt/shell-init-probe/bin" in output
+
+    @pytest.mark.skipif(
+        not os.path.isfile("/bin/zsh") and not os.path.isfile("/usr/bin/zsh"),
+        reason="Requires zsh to exercise configurable local shell support.",
+    )
+    def test_zsh_shell_picks_up_zshrc_aliases_functions_and_persists_them(
+        self, tmp_path, monkeypatch
+    ):
+        zshrc = tmp_path / ".zshrc"
+        zshrc.write_text(
+            'export HERMES_ZSH_INIT_PROBE="zsh-ok"\n'
+            'probe_func() { echo "func:$HERMES_ZSH_INIT_PROBE"; }\n'
+            'alias probe_alias="echo alias:$HERMES_ZSH_INIT_PROBE"\n'
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15, shell="zsh")
+            try:
+                first = env.execute('probe_func; probe_alias')
+                second = env.execute('probe_func; probe_alias')
+            finally:
+                env.cleanup()
+
+        assert first["returncode"] == 0
+        assert second["returncode"] == 0
+        for result in (first, second):
+            output = result.get("output", "")
+            assert "func:zsh-ok" in output
+            assert "alias:zsh-ok" in output
 
     def test_profile_path_export_survives_bashrc_interactive_guard(
         self, tmp_path, monkeypatch
