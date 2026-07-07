@@ -1206,6 +1206,45 @@ export const api = {
     ),
 };
 
+export const hermesDashboardConsole = {
+  api,
+  fetchJSON,
+  authedFetch,
+  buildWsUrl,
+  buildWsAuthParam,
+  getWsTicket,
+  getManagementProfile,
+  setManagementProfile,
+  basePath: HERMES_BASE_PATH,
+};
+
+declare global {
+  interface Window {
+    /**
+     * Authenticated dashboard API handle for DevTools/automation.
+     *
+     * Agents should prefer this console surface over visual browser inspection
+     * when verifying dashboard state:
+     *
+     *   await window.hermes.api.getSessions(10, 0, "default", "recent")
+     *
+     * It reuses the already-injected dashboard auth token/cookie via fetchJSON.
+     */
+    hermes?: {
+      api: typeof api;
+      dashboard: typeof hermesDashboardConsole;
+    };
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.hermes = {
+    ...(window.hermes ?? {}),
+    api,
+    dashboard: hermesDashboardConsole,
+  };
+}
+
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
