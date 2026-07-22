@@ -1085,7 +1085,9 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
-    def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
+    def test_run_job_disabled_toolsets_layer_user_config_on_baseline(
+        self, tmp_path, monkeypatch
+    ):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 
         The bug: per-job enabled_toolsets was returned verbatim, letting an
@@ -1095,6 +1097,7 @@ class TestRunJobSessionPersistence:
         (cronjob/messaging/clarify). AIAgent's disabled_toolsets takes
         precedence over enabled_toolsets, so this stops the bypass.
         """
+        monkeypatch.delenv("CRON_DISABLED_TOOLSETS", raising=False)
         (tmp_path / "config.yaml").write_text(
             "agent:\n"
             "  disabled_toolsets:\n"
