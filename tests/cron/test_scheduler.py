@@ -475,7 +475,8 @@ class TestRoutingIntents:
                     "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
                     "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
                     "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
-                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
+                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+                    "PHOTON_HOME_CHANNEL"):
             monkeypatch.delenv(var, raising=False)
 
         assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
@@ -505,6 +506,7 @@ class TestRoutingIntents:
         """'ALL' / 'All' / 'all' are all recognized."""
         from cron.scheduler import _resolve_delivery_targets
 
+        monkeypatch.delenv("PHOTON_HOME_CHANNEL", raising=False)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -1814,7 +1816,10 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
 
-    def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
+    def test_run_job_loads_skill_and_disables_recursive_cron_tools(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("CRON_DISABLED_TOOLSETS", raising=False)
         job = {
             "id": "skill-job",
             "name": "skill test",
