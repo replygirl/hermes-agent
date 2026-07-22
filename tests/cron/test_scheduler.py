@@ -7,9 +7,36 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    SILENT_MARKER,
+    _build_job_prompt,
+    _deliver_result,
+    _resolve_cron_disabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    run_job,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestResolveCronDisabledToolsets:
+    def test_defaults_when_override_is_absent(self, monkeypatch):
+        monkeypatch.delenv("CRON_DISABLED_TOOLSETS", raising=False)
+
+        assert _resolve_cron_disabled_toolsets({}) == [
+            "cronjob", "messaging", "clarify"
+        ]
+
+    def test_environment_json_replaces_baseline_and_keeps_user_denylist(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("CRON_DISABLED_TOOLSETS", '["clarify"]')
+
+        assert _resolve_cron_disabled_toolsets(
+            {"agent": {"disabled_toolsets": ["file", "clarify"]}}
+        ) == ["clarify", "file"]
 
 
 class TestResolveOrigin:

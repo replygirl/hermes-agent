@@ -59,19 +59,31 @@ class CronPromptInjectionBlocked(Exception):
 
 
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
-    """Toolsets a cron-spawned agent must never receive.
+    """Resolve the cron-agent denylist.
 
-    Three protected toolsets are always disabled in cron context:
-      - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
-      - ``messaging`` — interactive, needs a live gateway session
-      - ``clarify`` — interactive, blocks waiting for user input
-
-    User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
-    so per-job ``enabled_toolsets`` cannot bypass policy that applies to
-    ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
-    past config.yaml's denylist).
+    ``CRON_DISABLED_TOOLSETS`` may replace the default baseline with a JSON
+    array. Profile ``.env`` is reloaded before this function runs, so profiles
+    can opt into cron management independently. Invalid overrides fail closed
+    to the default. User-level ``agent.disabled_toolsets`` is always layered on
+    top so per-job allowlists cannot bypass the operator's global denylist.
     """
     disabled = ["cronjob", "messaging", "clarify"]
+    override = os.getenv("CRON_DISABLED_TOOLSETS", "").strip()
+    if override:
+        try:
+            parsed = json.loads(override)
+            if not isinstance(parsed, list) or not all(
+                isinstance(name, str) for name in parsed
+            ):
+                raise ValueError("expected a JSON array of strings")
+            disabled = []
+            for name in parsed:
+                name = name.strip()
+                if name and name not in disabled:
+                    disabled.append(name)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning("Invalid CRON_DISABLED_TOOLSETS; using defaults: %s", exc)
+
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
