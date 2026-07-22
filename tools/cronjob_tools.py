@@ -736,9 +736,7 @@ On update, passing skills=[] clears attached skills.
 
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
 user-facing content in the final response. Cron jobs run autonomously with no user
-present — they cannot ask questions or request clarification.
-
-Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
+present — they cannot ask questions or request clarification.""",
     "parameters": {
         "type": "object",
         "properties": {

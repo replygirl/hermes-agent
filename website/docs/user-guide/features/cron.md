@@ -25,10 +25,6 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 Cron jobs use whatever provider `hermes model` selected. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
-:::warning
-Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
-:::
-
 ## Creating scheduled tasks
 
 ### In chat with `/cron`
